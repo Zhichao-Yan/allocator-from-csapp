@@ -75,6 +75,12 @@ static void *extend_heap(size_t words)
 
 int mm_init(void)
 {
+    /*     
+    * prologue block is double words
+    * epilogue block is single word
+    * in order to double-word alignment
+    * we need another word before the prologue block as padding 
+    */
     if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
         return -1;
     PUT(heap_listp, 0);
@@ -84,6 +90,7 @@ int mm_init(void)
     heap_listp += (2 * WSIZE);
 
 #ifdef NEXT_FIT
+    /* search from point rover */
     rover = heap_listp;
 #endif
 
@@ -128,6 +135,7 @@ static void *coalesce(void *bp)
 
 #ifdef NEXT_FIT
     /* Make sure the rover isn't pointing into the free block that we just coalesced */
+    /* if the block where rover point belongs to is coalesced just now,make rover = bp */
     if ((rover > (char *)bp) && (rover < NEXT_BLKP(bp)))
         rover = bp;
 #endif
@@ -136,29 +144,29 @@ static void *coalesce(void *bp)
 
 void *mm_malloc(size_t size)
 {
-    size_t asize;      /* Adjusted block size */
-    size_t extendsize; /* Amount to extend heap if no fit */
+    size_t asize;      /* block size after Adjusted */
+    size_t extend_size; /* Amount to extend heap if no fit */
     char *bp;
 
+    /* create the initial empty heap */
     if (heap_listp == 0)
     {
         mm_init();
     }
 
-    if (size == 0) /* Ignore spurious requests */
+    if (size == 0) /* Ignore spurious/bogus requests */
         return NULL;
 
     /* Adjust block size to include overhead and alignment reqs. */
+    /* 2DSIZE: one DSIZE for header and footer,another DSIZE for data portion */
     if (size <= DSIZE)
     {
         asize = 2 * DSIZE;
-    }
-    else
-    {
+    }else{
         /* (size + (DSIZE - 1) is for double words alignment */
         /* DSIZE is for block header and footer */
-        asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
-        // asize = ((size + (DSIZE - 1)) / DSIZE) * DSIZE + DSIZE;
+        asize = ((size + (DSIZE - 1)) / DSIZE) * DSIZE + DSIZE;
+        // asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
     }
 
     /* Search the free list for a fit */
@@ -168,13 +176,14 @@ void *mm_malloc(size_t size)
         return bp;
     }
 
-    /* No fit found. Get more memory and place the block */
-    extendsize = MAX(asize, CHUNKSIZE);
-    if ((bp = extend_heap(extendsize / WSIZE)) == NULL)
+    /* not a suitable block found, then add a new free block to the block list and place the block */
+    extend_size = MAX(asize, CHUNKSIZE);
+    if ((bp = extend_heap(extend_size / WSIZE)) == NULL)
         return NULL;
     place(bp, asize);
     return bp;
 }
+
 void mm_free(void *bp)
 {
     if (bp == 0)
@@ -193,23 +202,27 @@ void *mm_realloc(void *ptr, size_t size)
 {
     size_t oldsize;
     void *newptr;
-    /* If size == 0 then this is just free, and we return NULL. */
+
+    /* If size == 0, then just free it and return NULL. */
     if (size == 0)
     {
         mm_free(ptr);
         return 0;
     }
-    /* If oldptr is NULL, then this is just malloc. */
+
+    /* If ptr is NULL, then just malloc a new block of memory */
     if (ptr == NULL)
     {
         return mm_malloc(size);
     }
+
     newptr = mm_malloc(size);
     /* If realloc() fails the original block is left untouched  */
     if (!newptr)
     {
         return 0;
     }
+
     /* Copy the old data. */
     oldsize = GET_SIZE(HDRP(ptr));
     if (size < oldsize)
@@ -229,6 +242,7 @@ void *mm_calloc (size_t nmemb, size_t size)
     memset(bp,0,size * nmemb);
     return bp;
 }
+
 void mm_checkheap(int verbose)
 {
     checkheap(verbose);
@@ -239,11 +253,12 @@ void mm_checkheap(int verbose)
 static void checkheap(int verbose)
 {
     char *bp = heap_listp;
-    /* verbose: printing some infos about heap*/
-    if (verbose)
-        printf("Heap (%p):\n", heap_listp);
+
+    /* printing some infos about heap*/
+    printf("Heap (%p):\n", heap_listp);
+
     /* check prologue header */
-    if ((GET_SIZE(HDRP(heap_listp)) != DSIZE) || !GET_ALLOC(HDRP(heap_listp)))
+    if ((GET_SIZE(HDRP(heap_listp)) != DSIZE) || !GET_ALLOC(HDRP(heap_listp)) || (GET_SIZE(FTRP(heap_listp)) != DSIZE) || !GET_ALLOC(FTRP(heap_listp)))
         printf("Bad prologue header\n");
 
     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
@@ -251,8 +266,10 @@ static void checkheap(int verbose)
             printblock(bp);
         checkblock(bp);
     }
+    /* when bp point goes to epilogue, print epilogue */
     if (verbose)
         printblock(bp);
+
     /* check epilogue header*/
     if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
         printf("Bad epilogue header\n");
@@ -270,15 +287,21 @@ static void checkblock(void *bp)
 static void printblock(void *bp) 
 {
     size_t hsize, halloc, fsize, falloc;
+    /* obtain size field in header */
     hsize = GET_SIZE(HDRP(bp));
     if(hsize == 0) 
     {
         printf("%p: End Of BlockList\n", bp);
         return;
     }
+    /* obtain alloc field in header */
     halloc = GET_ALLOC(HDRP(bp));  
+
+    /* obtain size field in footer */
     fsize = GET_SIZE(FTRP(bp));
-    falloc = GET_ALLOC(FTRP(bp));  
+    /* obtain alloc field in footer */
+    falloc = GET_ALLOC(FTRP(bp));
+
     printf("%p: header: [%ld/%c] footer: [%ld/%c]\n", bp, 
            hsize, (halloc ? '1' : '0'), 
            fsize, (falloc ? '1' : '0'));
@@ -301,30 +324,33 @@ static void *find_fit(size_t asize)
         if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
             return rover;
 
-    return NULL;  /* no fit found */
+    return NULL;        /* failed to fit */
 #else 
     /* First-fit search */
     void *bp;
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+    for (bp = NEXT_BLKP(heap_listp); GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
             return bp;
         }
     }
-    return NULL;        /* No fit */
+    return NULL;        /* failed to fit */
 #endif
 }
 
 static void place(void *bp, size_t asize)
 {
-    size_t csize = GET_SIZE(HDRP(bp));   
+    size_t csize = GET_SIZE(HDRP(bp));  
+
+    /* calculate to decide whether to split the free block */ 
+
+    /* more than 2 * DSIZE left, it can split out a block to place data */
     if ((csize - asize) >= (2*DSIZE)) { 
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize-asize, 0));
         PUT(FTRP(bp), PACK(csize-asize, 0));
-    }
-    else { 
+    }else { 
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
